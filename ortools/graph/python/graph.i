@@ -108,6 +108,7 @@ typedef uint64_t uint64;
 %unignore operations_research::SimpleMinCostFlow::AddArcWithCapacityAndUnitCost;
 %unignore operations_research::SimpleMinCostFlow::SetNodeSupply;
 %unignore operations_research::SimpleMinCostFlow::Solve;
+%unignore operations_research::SimpleMinCostFlow::SolveWithCostAdjustment;
 // untested
 %unignore operations_research::SimpleMinCostFlow::SolveMaxFlowWithMinCost;
 %unignore operations_research::SimpleMinCostFlow::OptimalCost;
@@ -120,6 +121,7 @@ typedef uint64_t uint64;
 %unignore operations_research::SimpleMinCostFlow::Capacity;  // untested
 %unignore operations_research::SimpleMinCostFlow::Supply;  // untested
 %unignore operations_research::SimpleMinCostFlow::UnitCost;
+%unignore operations_research::SimpleMinCostFlow::SetDesiredCost; // untested (AJE)
 
 %include "ortools/graph/min_cost_flow.h"
 

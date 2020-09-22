@@ -244,6 +244,10 @@ class SimpleMinCostFlow : public MinCostFlowBase {
     return SolveWithPossibleAdjustment(SupplyAdjustment::DONT_ADJUST);
   }
 
+  Status SolveWithCostAdjustment(){
+    return EmerickSolve(SupplyAdjustment::DONT_ADJUST );
+  }
+
   // Same as Solve(), but does not have the restriction that the supply
   // must match the demand or that the graph has enough capacity to serve
   // all the demand or use all the supply. This will compute a maximum-flow
@@ -278,6 +282,8 @@ class SimpleMinCostFlow : public MinCostFlowBase {
   FlowQuantity Capacity(ArcIndex arc) const;
   FlowQuantity Supply(NodeIndex node) const;
   CostValue UnitCost(ArcIndex arc) const;
+  void SetDesiredCost(CostValue value) { desired_flow_cost_ = value; }
+  
 
  private:
   typedef ::util::ReverseArcStaticGraph<NodeIndex, ArcIndex> Graph;
@@ -288,6 +294,7 @@ class SimpleMinCostFlow : public MinCostFlowBase {
   // Solves the problem, potentially applying supply and demand adjustment,
   // and returns the problem status.
   Status SolveWithPossibleAdjustment(SupplyAdjustment adjustment);
+  Status EmerickSolve(SupplyAdjustment adjustment);
   void ResizeNodeVectors(NodeIndex node);
 
   std::vector<NodeIndex> arc_tail_;
@@ -298,6 +305,7 @@ class SimpleMinCostFlow : public MinCostFlowBase {
   std::vector<ArcIndex> arc_permutation_;
   std::vector<FlowQuantity> arc_flow_;
   CostValue optimal_cost_;
+  CostValue desired_flow_cost_;
   FlowQuantity maximum_flow_;
 
   DISALLOW_COPY_AND_ASSIGN(SimpleMinCostFlow);
@@ -361,6 +369,7 @@ class GenericMinCostFlow : public MinCostFlowBase {
 
   // Solves the problem, returning true if a min-cost flow could be found.
   bool Solve();
+  bool SolveWithCostAdjustment();
 
   // Checks for feasibility, i.e., that all the supplies and demands can be
   // matched without exceeding bottlenecks in the network.
@@ -382,6 +391,11 @@ class GenericMinCostFlow : public MinCostFlowBase {
 
   // Returns the cost of the minimum-cost flow found by the algorithm.
   CostValue GetOptimalCost() const { return total_flow_cost_; }
+
+  CostValue ComputeTotalCost();
+  CostValue ComputeTotalPsuedoCost();
+
+  void RecomputePsuedoCost();
 
   // Returns the flow on the given arc using the equations given in the
   // comment on residual_arc_capacity_.
@@ -408,6 +422,9 @@ class GenericMinCostFlow : public MinCostFlowBase {
 
   // Whether to use the UpdatePrices() heuristic.
   void SetUseUpdatePrices(bool value) { use_price_update_ = value; }
+
+  // Set the desired (target) cost
+  void SetDesiredCost(CostValue value) { desired_flow_cost_ = value; }
 
   // Whether to check the feasibility of the problem with a max-flow, prior to
   // solving it. This uses about twice as much memory, but detects infeasible
@@ -464,6 +481,9 @@ class GenericMinCostFlow : public MinCostFlowBase {
 
   // Scales the costs, by multiplying them by (graph_->num_nodes() + 1).
   void ScaleCosts();
+
+  // aje
+  void SetPsuedoCosts();
 
   // Unscales the costs, by dividing them by (graph_->num_nodes() + 1).
   void UnscaleCosts();
@@ -572,8 +592,13 @@ class GenericMinCostFlow : public MinCostFlowBase {
   // An array representing the scaled unit cost for each arc in graph_.
   ZVector<ArcScaledCostType> scaled_arc_unit_cost_;
 
+  //AJE
+  ZVector<ArcScaledCostType> psuedo_scaled_arc_unit_cost_;
+
   // The total cost of the flow.
   CostValue total_flow_cost_;
+
+  CostValue desired_flow_cost_;
 
   // The status of the problem.
   Status status_;

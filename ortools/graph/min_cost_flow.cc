@@ -11,6 +11,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+
+//
+// This file contains modifications by Andrew Emerick
+// (github: aemerick   -    aemerick11@gmail.com)
+//
+//
+
 #include "ortools/graph/min_cost_flow.h"
 
 #include <algorithm>
@@ -56,7 +63,9 @@ GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::GenericMinCostFlow(
       alpha_(FLAGS_min_cost_flow_alpha),
       cost_scaling_factor_(1),
       scaled_arc_unit_cost_(),
+      psuedo_scaled_arc_unit_cost_(),
       total_flow_cost_(0),
+      desired_flow_cost_(0),
       status_(NOT_SOLVED),
       initial_node_excess_(),
       feasible_node_excess_(),
@@ -83,6 +92,8 @@ GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::GenericMinCostFlow(
     residual_arc_capacity_.SetAll(0);
     scaled_arc_unit_cost_.Reserve(-max_num_arcs, max_num_arcs - 1);
     scaled_arc_unit_cost_.SetAll(0);
+    psuedo_scaled_arc_unit_cost_.Reserve(-max_num_arcs, max_num_arcs - 1);
+    psuedo_scaled_arc_unit_cost_.SetAll(0);
   }
 }
 
@@ -226,7 +237,7 @@ bool GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::CheckCostRange()
   CostValue max_cost_magnitude = 0;
   // Traverse the initial arcs of the graph:
   for (ArcIndex arc = 0; arc < graph_->num_arcs(); ++arc) {
-    const CostValue cost_magnitude = MathUtil::Abs(scaled_arc_unit_cost_[arc]);
+    const CostValue cost_magnitude = MathUtil::Abs(psuedo_scaled_arc_unit_cost_[arc]);
     max_cost_magnitude = std::max(max_cost_magnitude, cost_magnitude);
     if (cost_magnitude != 0.0) {
       min_cost_magnitude = std::min(min_cost_magnitude, cost_magnitude);
@@ -272,7 +283,7 @@ GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::DebugString(
   // Reduced cost is computed directly without calling ReducedCost to avoid
   // recursive calls between ReducedCost and DebugString in case a DCHECK in
   // ReducedCost fails.
-  const CostValue reduced_cost = scaled_arc_unit_cost_[arc] +
+  const CostValue reduced_cost = psuedo_scaled_arc_unit_cost_[arc] +
                                  node_potential_[tail] - node_potential_[head];
   return absl::StrFormat(
       "%s Arc %d, from %d to %d, "
@@ -284,7 +295,7 @@ GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::DebugString(
       context, arc, tail, head, Capacity(arc),
       static_cast<FlowQuantity>(residual_arc_capacity_[arc]), Flow(arc),
       node_potential_[tail], node_potential_[head], node_excess_[tail],
-      node_excess_[head], static_cast<CostValue>(scaled_arc_unit_cost_[arc]),
+      node_excess_[head], static_cast<CostValue>(psuedo_scaled_arc_unit_cost_[arc]),
       reduced_cost);
 }
 
@@ -476,7 +487,7 @@ GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::FastReducedCost(
   DCHECK(graph_->IsNodeValid(Head(arc)));
   DCHECK_LE(node_potential_[Tail(arc)], 0) << DebugString("ReducedCost:", arc);
   DCHECK_LE(node_potential_[Head(arc)], 0) << DebugString("ReducedCost:", arc);
-  return scaled_arc_unit_cost_[arc] + tail_potential -
+  return psuedo_scaled_arc_unit_cost_[arc] + tail_potential -
          node_potential_[Head(arc)];
 }
 
@@ -503,6 +514,9 @@ bool GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::Solve() {
     status_ = INFEASIBLE;
     return false;
   }
+
+  std::cout<<"SimpleMinCostFlow::Solve\n";
+
   node_potential_.SetAll(0);
   ResetFirstAdmissibleArcs();
   ScaleCosts();
@@ -529,12 +543,106 @@ bool GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::Solve() {
 }
 
 template <typename Graph, typename ArcFlowType, typename ArcScaledCostType>
+CostValue GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::ComputeTotalCost() {
+
+
+  total_flow_cost_ = 0;
+  for (ArcIndex arc = 0; arc < graph_->num_arcs(); ++arc) {
+    const FlowQuantity flow_on_arc = residual_arc_capacity_[Opposite(arc)];
+    total_flow_cost_ += scaled_arc_unit_cost_[arc] * flow_on_arc;
+  }
+  std::cout<<"GenericMinCostFlow::ComputeTotalCost = " << total_flow_cost_ << "\n";
+
+
+  return total_flow_cost_;
+}
+
+template <typename Graph, typename ArcFlowType, typename ArcScaledCostType>
+CostValue GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::ComputeTotalPsuedoCost() {
+
+
+  CostValue psuedo_cost = 0;
+  for (ArcIndex arc = 0; arc < graph_->num_arcs(); ++arc) {
+    const FlowQuantity flow_on_arc = residual_arc_capacity_[Opposite(arc)];
+    psuedo_cost += psuedo_scaled_arc_unit_cost_[arc] * flow_on_arc;
+  }
+  std::cout<<"GenericMinCostFlow::ComputePsuedoTotalCost = " << psuedo_cost << "\n";
+
+  return psuedo_cost;
+}
+
+template <typename Graph, typename ArcFlowType, typename ArcScaledCostType>
+bool GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::SolveWithCostAdjustment() {
+  status_ = NOT_SOLVED;
+  if (FLAGS_min_cost_flow_check_balance && !CheckInputConsistency()) {
+    status_ = UNBALANCED;
+    return false;
+  }
+  if (FLAGS_min_cost_flow_check_costs && !CheckCostRange()) {
+    status_ = BAD_COST_RANGE;
+    return false;
+  }
+  if (check_feasibility_ && !CheckFeasibility(nullptr, nullptr)) {
+    status_ = INFEASIBLE;
+    return false;
+  }
+
+  node_potential_.SetAll(0);
+  ResetFirstAdmissibleArcs();
+  ScaleCosts();
+
+  SetPsuedoCosts();
+
+  Optimize(); // need to change this to USE psuedo costs!!!
+
+  if (FLAGS_min_cost_flow_check_result && !CheckResult()) {
+    status_ = BAD_RESULT;
+    UnscaleCosts();
+    return false;
+  }
+  UnscaleCosts();
+  if (status_ != OPTIMAL) {
+    LOG(DFATAL) << "Status != OPTIMAL";
+    total_flow_cost_ = 0;
+    return false;
+  }
+
+  ComputeTotalCost();
+/*
+  total_flow_cost_ = 0;
+  for (ArcIndex arc = 0; arc < graph_->num_arcs(); ++arc) {
+    const FlowQuantity flow_on_arc = residual_arc_capacity_[Opposite(arc)];
+    total_flow_cost_ += scaled_arc_unit_cost_[arc] * flow_on_arc;
+  }
+*/
+  status_ = OPTIMAL;
+  IF_STATS_ENABLED(VLOG(1) << stats_.StatString());
+  return true;
+}
+
+template <typename Graph, typename ArcFlowType, typename ArcScaledCostType>
 void GenericMinCostFlow<Graph, ArcFlowType,
                         ArcScaledCostType>::ResetFirstAdmissibleArcs() {
   for (NodeIndex node = 0; node < graph_->num_nodes(); ++node) {
     first_admissible_arc_.Set(node,
                               GetFirstOutgoingOrOppositeIncomingArc(node));
   }
+}
+
+template <typename Graph, typename ArcFlowType, typename ArcScaledCostType>
+void GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::SetPsuedoCosts() {
+
+  std::cout << "Start GenericMinCostFlow::SetPsuedoCosts\n";
+
+  for (ArcIndex arc = 0; arc < graph_->num_arcs(); ++arc){
+    const CostValue cost = scaled_arc_unit_cost_[arc];
+    psuedo_scaled_arc_unit_cost_.Set(arc, cost);
+    psuedo_scaled_arc_unit_cost_.Set(Opposite(arc), -cost);
+  }
+
+  std::cout << "End GenericMinCostFlow::SetPsuedoCosts\n";
+
+  return;
 }
 
 template <typename Graph, typename ArcFlowType, typename ArcScaledCostType>
@@ -545,13 +653,55 @@ void GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::ScaleCosts() {
   VLOG(3) << "Number of nodes in the graph = " << graph_->num_nodes();
   VLOG(3) << "Number of arcs in the graph = " << graph_->num_arcs();
   for (ArcIndex arc = 0; arc < graph_->num_arcs(); ++arc) {
+// AJE: look at below line?
     const CostValue cost = scaled_arc_unit_cost_[arc] * cost_scaling_factor_;
     scaled_arc_unit_cost_.Set(arc, cost);
     scaled_arc_unit_cost_.Set(Opposite(arc), -cost);
-    epsilon_ = std::max(epsilon_, MathUtil::Abs(cost));
+
+    const CostValue psuedo_cost = psuedo_scaled_arc_unit_cost_[arc] * cost_scaling_factor_;
+    psuedo_scaled_arc_unit_cost_.Set(arc, psuedo_cost);
+    psuedo_scaled_arc_unit_cost_.Set(Opposite(arc), -psuedo_cost);
+
+    /* AJE: SWITCH EPSILON TO PSUEDO COST */
+    epsilon_ = std::max(epsilon_, MathUtil::Abs(psuedo_cost));
+
   }
   VLOG(3) << "Initial epsilon = " << epsilon_;
   VLOG(3) << "Cost scaling factor = " << cost_scaling_factor_;
+}
+
+template <typename Graph, typename ArcFlowType, typename ArcScaledCostType>
+void GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::RecomputePsuedoCost() {
+
+  std::cout<<"GenericMinCostFlow::RecomputePsuedoCost = start\n";
+
+  // AJE: I think absolute value for delta is correct?
+  // maybe once desired > total go BACK to regular ?
+  const CostValue delta = desired_flow_cost_ - total_flow_cost_;
+  std::cout<<"Pseudo Costs = ";
+
+  if (delta < 0){
+    // just get back to the end as fast as possible !
+    for (ArcIndex arc = 0; arc < graph_->num_arcs(); ++arc){
+      // recompute the cost in EACH arc as
+      psuedo_scaled_arc_unit_cost_[arc] = scaled_arc_unit_cost_[arc];
+      std::cout<< psuedo_scaled_arc_unit_cost_[arc] << " ";
+    }
+    // need to recompute epsilon. set to zero assuming we rescale
+    // after this call
+    epsilon_=0;
+  } else {
+    // update these with changing costs
+    for (ArcIndex arc = 0; arc < graph_->num_arcs(); ++arc){
+      // recompute the cost in EACH arc as
+      psuedo_scaled_arc_unit_cost_[arc] = std::abs(std::abs(delta) - psuedo_scaled_arc_unit_cost_[arc]);
+      std::cout<< psuedo_scaled_arc_unit_cost_[arc] << " ";
+    }
+  }
+  std::cout<<"\n";
+
+
+  return;
 }
 
 template <typename Graph, typename ArcFlowType, typename ArcScaledCostType>
@@ -561,6 +711,10 @@ void GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::UnscaleCosts() {
     const CostValue cost = scaled_arc_unit_cost_[arc] / cost_scaling_factor_;
     scaled_arc_unit_cost_.Set(arc, cost);
     scaled_arc_unit_cost_.Set(Opposite(arc), -cost);
+
+    const CostValue psuedo_cost = psuedo_scaled_arc_unit_cost_[arc] / cost_scaling_factor_;
+    psuedo_scaled_arc_unit_cost_.Set(arc, psuedo_cost);
+    psuedo_scaled_arc_unit_cost_.Set(Opposite(arc), -psuedo_cost);
   }
   cost_scaling_factor_ = 1;
 }
@@ -800,11 +954,20 @@ void GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::Refine() {
   InitializeActiveNodeStack();
 
   const NodeIndex num_nodes = graph_->num_nodes();
+  std::cout<<"GenericMinCostFlow::Refine -- \n";
   while (status_ != INFEASIBLE && !active_nodes_.empty()) {
     // TODO(user): Experiment with different factors in front of num_nodes.
+
+    // AJE I think I should probably just update the costs every loop here?
+    UnscaleCosts();
+    ComputeTotalCost();
+    ComputeTotalPsuedoCost();
+    if (desired_flow_cost_ > 0) RecomputePsuedoCost(); /* key component of this algorithm */
+    ScaleCosts();
+
     if (num_relabels_since_last_price_update_ >= num_nodes) {
       num_relabels_since_last_price_update_ = 0;
-      if (use_price_update_) {
+      if (use_price_update_) { // AJE: this is false by default (and probably in my case)
         UpdatePrices();
       }
     }
@@ -907,7 +1070,7 @@ void GenericMinCostFlow<Graph, ArcFlowType, ArcScaledCostType>::Relabel(
     const ArcIndex arc = it.Index();
     if (residual_arc_capacity_[arc] > 0) {
       const CostValue min_non_admissible_potential_for_arc =
-          node_potential_[Head(arc)] - scaled_arc_unit_cost_[arc];
+          node_potential_[Head(arc)] - psuedo_scaled_arc_unit_cost_[arc]; // AJE:
       if (min_non_admissible_potential_for_arc > min_non_admissible_potential) {
         if (min_non_admissible_potential_for_arc > guaranteed_new_potential) {
           // We found an admissible arc for the guaranteed_new_potential. We
@@ -1037,6 +1200,8 @@ SimpleMinCostFlow::Status SimpleMinCostFlow::SolveWithPossibleAdjustment(
   const ArcIndex num_arcs = arc_capacity_.size();
   if (num_nodes == 0) return OPTIMAL;
 
+  std::cout<<"SimpleMinCostFlow::SolveWithPossibleAdjustment\n";
+
   int supply_node_count = 0, demand_node_count = 0;
   FlowQuantity total_supply = 0, total_demand = 0;
   for (NodeIndex node = 0; node < num_nodes; ++node) {
@@ -1138,6 +1303,127 @@ SimpleMinCostFlow::Status SimpleMinCostFlow::SolveWithPossibleAdjustment(
 
   arc_flow_.resize(num_arcs);
   if (min_cost_flow.Solve()) {
+    optimal_cost_ = min_cost_flow.GetOptimalCost();
+    for (arc = 0; arc < num_arcs; ++arc) {
+      arc_flow_[arc] = min_cost_flow.Flow(PermutedArc(arc));
+    }
+  }
+  return min_cost_flow.status();
+}
+
+SimpleMinCostFlow::Status SimpleMinCostFlow::EmerickSolve(
+    SupplyAdjustment adjustment) {
+  optimal_cost_ = 0;
+  maximum_flow_ = 0;
+  arc_flow_.clear();
+  const NodeIndex num_nodes = node_supply_.size();
+  const ArcIndex num_arcs = arc_capacity_.size();
+  if (num_nodes == 0) return OPTIMAL;
+
+  std::cout<<"SimpleMinCostFlow::EmerickSolve\n";
+
+  int supply_node_count = 0, demand_node_count = 0;
+  FlowQuantity total_supply = 0, total_demand = 0;
+  for (NodeIndex node = 0; node < num_nodes; ++node) {
+    if (node_supply_[node] > 0) {
+      ++supply_node_count;
+      total_supply += node_supply_[node];
+    } else if (node_supply_[node] < 0) {
+      ++demand_node_count;
+      total_demand -= node_supply_[node];
+    }
+  }
+  if (adjustment == DONT_ADJUST && total_supply != total_demand) {
+    return UNBALANCED;
+  }
+
+  // Feasibility checking, and possible supply/demand adjustment, is done by:
+  // 1. Creating a new source and sink node.
+  // 2. Taking all nodes that have a non-zero supply or demand and
+  //    connecting them to the source or sink respectively. The arc thus
+  //    added has a capacity of the supply or demand.
+  // 3. Computing the max flow between the new source and sink.
+  // 4. If adjustment isn't being done, checking that the max flow is equal
+  //    to the total supply/demand (and returning INFEASIBLE if it isn't).
+  // 5. Running min-cost max-flow on this augmented graph, using the max
+  //    flow computed in step 3 as the supply of the source and demand of
+  //    the sink.
+  const ArcIndex augmented_num_arcs =
+      num_arcs + supply_node_count + demand_node_count;
+  const NodeIndex source = num_nodes;
+  const NodeIndex sink = num_nodes + 1;
+  const NodeIndex augmented_num_nodes = num_nodes + 2;
+
+  Graph graph(augmented_num_nodes, augmented_num_arcs);
+  for (ArcIndex arc = 0; arc < num_arcs; ++arc) {
+    graph.AddArc(arc_tail_[arc], arc_head_[arc]);
+  }
+
+  for (NodeIndex node = 0; node < num_nodes; ++node) {
+    if (node_supply_[node] > 0) {
+      graph.AddArc(source, node);
+    } else if (node_supply_[node] < 0) {
+      graph.AddArc(node, sink);
+    }
+  }
+
+  graph.Build(&arc_permutation_);
+
+  {
+    GenericMaxFlow<Graph> max_flow(&graph, source, sink);
+    ArcIndex arc;
+    for (arc = 0; arc < num_arcs; ++arc) {
+      max_flow.SetArcCapacity(PermutedArc(arc), arc_capacity_[arc]);
+    }
+    for (NodeIndex node = 0; node < num_nodes; ++node) {
+      if (node_supply_[node] != 0) {
+        max_flow.SetArcCapacity(PermutedArc(arc), std::abs(node_supply_[node]));
+        ++arc;
+      }
+    }
+    CHECK_EQ(arc, augmented_num_arcs);
+    if (!max_flow.Solve()) {
+      LOG(ERROR) << "Max flow could not be computed.";
+      switch (max_flow.status()) {
+        case MaxFlowStatusClass::NOT_SOLVED:
+          return NOT_SOLVED;
+        case MaxFlowStatusClass::OPTIMAL:
+          LOG(ERROR)
+              << "Max flow failed but claimed to have an optimal solution";
+          ABSL_FALLTHROUGH_INTENDED;
+        default:
+          return BAD_RESULT;
+      }
+    }
+    maximum_flow_ = max_flow.GetOptimalFlow();
+  }
+
+  if (adjustment == DONT_ADJUST && maximum_flow_ != total_supply) {
+    return INFEASIBLE;
+  }
+
+  GenericMinCostFlow<Graph> min_cost_flow(&graph);
+  ArcIndex arc;
+  for (arc = 0; arc < num_arcs; ++arc) {
+    ArcIndex permuted_arc = PermutedArc(arc);
+    min_cost_flow.SetArcUnitCost(permuted_arc, arc_cost_[arc]);
+    min_cost_flow.SetArcCapacity(permuted_arc, arc_capacity_[arc]);
+  }
+  for (NodeIndex node = 0; node < num_nodes; ++node) {
+    if (node_supply_[node] != 0) {
+      ArcIndex permuted_arc = PermutedArc(arc);
+      min_cost_flow.SetArcCapacity(permuted_arc, std::abs(node_supply_[node]));
+      min_cost_flow.SetArcUnitCost(permuted_arc, 0);
+      ++arc;
+    }
+  }
+  min_cost_flow.SetNodeSupply(source, maximum_flow_);
+  min_cost_flow.SetNodeSupply(sink, -maximum_flow_);
+  min_cost_flow.SetCheckFeasibility(false);
+  min_cost_flow.SetDesiredCost(desired_flow_cost_);
+
+  arc_flow_.resize(num_arcs);
+  if (min_cost_flow.SolveWithCostAdjustment()) {
     optimal_cost_ = min_cost_flow.GetOptimalCost();
     for (arc = 0; arc < num_arcs; ++arc) {
       arc_flow_[arc] = min_cost_flow.Flow(PermutedArc(arc));
